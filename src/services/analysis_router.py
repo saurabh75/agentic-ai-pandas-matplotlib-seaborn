@@ -15,8 +15,25 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+# High-priority phrases that mean "run the full EDA workflow".
+# Checked BEFORE the generic patterns below so "do all" doesn't collapse to
+# generic 'value_counts' / 'describe'.
+_FULL_EDA_PATTERNS = [
+    r"\b(full|complete|entire|professional|thorough|whole)\s+(eda|analysis|report|profile|workflow)\b",
+    r"\beda\s+(workflow|report|profile|analysis)\b",
+    r"\b(do|run|perform|execute|generate)\s+(all|everything|full|the\s+full|complete)\b",
+    r"\bdo\s+it\s+all\b",
+    r"\ball\s+(the\s+)?(steps|analysis|analyses|checks)\b",
+    r"\bexploratory\s+data\s+analysis\b",
+    r"\b(profile|profiling)\s+(the\s+)?(data|dataset|file)\b",
+    r"\b(auto|automated|automatic)\s+eda\b",
+    r"^\s*(do|run)\s+all\s*$",
+    r"^\s*eda\s*$",
+]
+
 # --- intent → regex map --------------------------------------------------
 _PATTERNS = {
+    "full_eda":     r"|".join(_FULL_EDA_PATTERNS),
     "describe":     r"\b(describe|summary|summarize|summarise|overview|stat[s]?|info|schema|dtypes?)\b",
     "nulls":        r"\b(null|na|nan|missing|empty|blank)\b",
     "duplicates":   r"\b(duplicate|dup|repeated|repeats)\b",

@@ -52,7 +52,7 @@ try:
     from src.services.vector_store import get_vector_store, clear_vector_store_cache
     from src.services.generation_engine import get_llm, clear_session
     from src.utils.file_utils import sanitize_filename, get_unique_storage_path
-    from src.utils.chroma_utils import get_database_stats, clear_database
+    from src.utils.chroma_utils import get_database_stats, clear_database, wipe_all_data
     from src.models.document import DatabaseStats
     from src.evaluation.evaluator import get_metric_store
     from src.logger import get_logger
@@ -193,19 +193,54 @@ with st.sidebar:
 
     # --- DB Controls ---
     st.header("🛠️ Controls")
+
+    def _hard_reset(wipe_files: bool = True) -> None:
+        """Nuke Chroma + optional data folders and reset every cache."""
+        extra = []
+        if wipe_files:
+            extra = [
+                DOCUMENTS_DIR,
+                PROJECT_ROOT / "data_store",
+                PROJECT_ROOT / "charts",
+            ]
+        # 1) drop collection while store is still open
+        try:
+            vs = cached_vector_store()
+            if vs:
+                clear_database(vs)
+        except Exception as e:
+            logger.warning(f"clear_database failed: {e}")
+        # 2) release handles, then rmtree on disk
+        clear_vector_store_cache()
+        reset_pipeline()
+        cached_vector_store.clear()
+        cached_pipeline.clear()
+        wipe_all_data(CHROMA_PERSIST_DIR, extra_dirs=extra)
+        # 3) reset chat state
+        try:
+            clear_session(st.session_state.session_id)
+        except Exception:
+            pass
+        st.session_state.messages = []
+        st.session_state.session_id = f"streamlit_{int(time.time())}"
+        st.session_state.pop("confirm_clear_db", None)
+
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🗑️ Clear DB", use_container_width=True):
-            if st.checkbox("Confirm clear?", key="confirm_clear"):
-                try:
-                    if vectorstore and clear_database(vectorstore):
-                        clear_vector_store_cache()
-                        reset_pipeline()
-                        st.session_state.messages = []
-                        st.success("✅ Cleared!")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"❌ {e}")
+        if st.session_state.get("confirm_clear_db"):
+            st.warning("This deletes ALL indexed data.")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("✅ Yes, clear", use_container_width=True, type="primary"):
+                _hard_reset(wipe_files=True)
+                st.success("✅ Database and files cleared")
+                st.rerun()
+            if cc2.button("Cancel", use_container_width=True):
+                st.session_state.pop("confirm_clear_db", None)
+                st.rerun()
+        else:
+            if st.button("🗑️ Clear DB", use_container_width=True):
+                st.session_state.confirm_clear_db = True
+                st.rerun()
     with col2:
         if st.button("🔄 Re-index", use_container_width=True):
             with st.spinner("Re-indexing…"):
@@ -213,6 +248,8 @@ with st.sidebar:
                     results = process_directory()
                     clear_vector_store_cache()
                     reset_pipeline()
+                    cached_vector_store.clear()
+                    cached_pipeline.clear()
                     st.success(f"✅ {len(results)} docs re-indexed")
                     st.rerun()
                 except Exception as e:
@@ -240,6 +277,7 @@ with st.sidebar:
                     result = process_single_file(storage_path)
                     clear_vector_store_cache()
                     reset_pipeline()
+                    cached_vector_store.clear()
                     pipeline = cached_pipeline()
                     if pipeline:
                         pipeline.invalidate_retrieval_cache()
@@ -253,10 +291,10 @@ with st.sidebar:
 
     # --- Conversation ---
     st.header("💬 Conversation")
-    if st.button("🆕 New Chat", use_container_width=True):
-        clear_session(st.session_state.session_id)
-        st.session_state.session_id = f"streamlit_{int(time.time())}"
-        st.session_state.messages = []
+    if st.button("🆕 New Chat", use_container_width=True,
+                 help="Clears chat AND deletes all uploaded files + vector DB"):
+        _hard_reset(wipe_files=True)
+        st.success("✅ New chat started — all data wiped")
         st.rerun()
     st.caption(f"Session: `{st.session_state.session_id[:22]}…`")
 
@@ -367,7 +405,7 @@ if prompt := st.chat_input("Ask about your documents…"):
                 answer_placeholder.markdown(full_answer + "▌")
             answer_placeholder.markdown(full_answer)
 
-            # Render chart if the pipeline produced one.
+            # Render primary chart if the pipeline produced one.
             if response is not None and getattr(response, "chart_path", None):
                 try:
                     st.image(response.chart_path,
@@ -375,6 +413,16 @@ if prompt := st.chat_input("Ask about your documents…"):
                              use_column_width=True)
                 except Exception as _e:
                     st.warning(f"Chart could not be displayed: {_e}")
+            # Render additional charts (Full EDA workflow generates many).
+            if response is not None:
+                extras = getattr(response, "extra_chart_paths", []) or []
+                caps = getattr(response, "extra_chart_captions", []) or []
+                for i, p in enumerate(extras):
+                    try:
+                        cap = caps[i] if i < len(caps) else f"Chart {i + 2}"
+                        st.image(p, caption=cap, use_column_width=True)
+                    except Exception as _e:
+                        st.warning(f"Extra chart {i} could not be displayed: {_e}")
             status.update(label="✅ Done", state="complete", expanded=False)
             if response is None:
                 st.session_state.messages.append({

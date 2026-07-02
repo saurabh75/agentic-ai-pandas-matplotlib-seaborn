@@ -190,6 +190,9 @@ class AgenticRAGResponse(BaseModel):
     # Optional chart produced by the chart pipeline (matplotlib + seaborn).
     chart_path: Optional[str] = None
     chart_caption: Optional[str] = None
+    # Patch v9.2: multiple charts (Full EDA workflow)
+    extra_chart_paths: List[str] = Field(default_factory=list)
+    extra_chart_captions: List[str] = Field(default_factory=list)
     # Patch v5: Data-analysis mode — Markdown result from pandas/stats engine.
     # When set, this is the authoritative answer and no LLM was called.
     analysis_markdown: Optional[str] = None

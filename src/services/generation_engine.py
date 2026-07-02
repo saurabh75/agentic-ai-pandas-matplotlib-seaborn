@@ -294,15 +294,20 @@ class GenerationEngine:
         context_string: str,
         ctx: GroundedContext,
         session_id: str = "default",
+        system_override: str | None = None,   # Patch v9.3
     ) -> CitedAnswer:
         """
         Run the full Reasoning → Draft → Citation → Verify pipeline.
+
+        Patch v9.3: if `system_override` is provided (a fully-rendered senior-
+        expert persona prompt with CONTEXT already embedded), use it in place
+        of the generic _REASONING_SYSTEM.
         """
         # --- Contextualize question (handle follow-ups) ---
         standalone = contextualize_question(session_id, question)
 
         # --- Draft answer ---
-        system = _REASONING_SYSTEM.format(context=context_string)
+        system = system_override if system_override else _REASONING_SYSTEM.format(context=context_string)
         prompt = f"{system}\n\nQuestion: {standalone}\n\nAnswer:"
         try:
             draft = self._llm.invoke(prompt).strip()
@@ -336,13 +341,14 @@ class GenerationEngine:
         question: str,
         context_string: str,
         session_id: str = "default",
+        system_override: str | None = None,   # Patch v9.3
     ) -> Generator[str, None, None]:
         """
         Streaming variant — yields text tokens for Streamlit st.write_stream().
         Citations and groundedness are NOT computed in streaming mode.
         """
         standalone = contextualize_question(session_id, question)
-        system = _REASONING_SYSTEM.format(context=context_string)
+        system = system_override if system_override else _REASONING_SYSTEM.format(context=context_string)
         prompt = f"{system}\n\nQuestion: {standalone}\n\nAnswer:"
         full_answer = ""
         try:

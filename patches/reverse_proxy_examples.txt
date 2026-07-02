@@ -1,0 +1,83 @@
+Two reference reverse-proxy configs. Pick one; both inject `X-Forwarded-User`.
+
+===========================================================================
+A) nginx + oauth2-proxy (Google / GitHub / Okta / Azure AD / etc.)
+===========================================================================
+
+# /etc/nginx/sites-available/rag.conf
+server {
+    listen 443 ssl http2;
+    server_name rag.example.com;
+
+    # 1) OAuth2 Proxy auth subrequest
+    location = /oauth2/auth {
+        internal;
+        proxy_pass       http://127.0.0.1:4180;
+        proxy_set_header Host             $host;
+        proxy_set_header X-Real-IP        $remote_addr;
+        proxy_set_header X-Scheme         $scheme;
+        proxy_set_header Content-Length   "";
+        proxy_pass_request_body           off;
+    }
+
+    location /oauth2/ {
+        proxy_pass       http://127.0.0.1:4180;
+        proxy_set_header Host             $host;
+        proxy_set_header X-Real-IP        $remote_addr;
+        proxy_set_header X-Scheme         $scheme;
+        proxy_set_header X-Auth-Request-Redirect $request_uri;
+    }
+
+    # 2) Streamlit app — protected
+    location / {
+        auth_request /oauth2/auth;
+        error_page 401 = /oauth2/sign_in;
+
+        # Inject identity headers oauth2-proxy sets on the auth response
+        auth_request_set $user   $upstream_http_x_auth_request_user;
+        auth_request_set $email  $upstream_http_x_auth_request_email;
+        proxy_set_header X-Forwarded-User  $user;
+        proxy_set_header X-Forwarded-Email $email;
+
+        # WebSocket upgrade (Streamlit requirement)
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade    $http_upgrade;
+        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Host       $host;
+
+        proxy_pass http://127.0.0.1:8501;   # Streamlit default port
+    }
+}
+
+Start oauth2-proxy:
+  oauth2-proxy \
+    --provider=google \
+    --email-domain=example.com \
+    --upstream=http://127.0.0.1:8501 \
+    --http-address=127.0.0.1:4180 \
+    --cookie-secret=$(openssl rand -base64 32) \
+    --client-id=YOUR_GOOGLE_CLIENT_ID \
+    --client-secret=YOUR_GOOGLE_CLIENT_SECRET \
+    --set-xauthrequest=true
+
+===========================================================================
+B) Cloudflare Access (zero-config for you if the domain is on Cloudflare)
+===========================================================================
+
+1. Cloudflare Dashboard → Zero Trust → Access → Applications → Add.
+2. Point it at rag.example.com and configure your identity provider.
+3. Cloudflare will inject:  Cf-Access-Authenticated-User-Email
+
+That's it — user_context.py already reads that header.
+
+===========================================================================
+Verify headers are reaching Streamlit
+===========================================================================
+
+Temporarily add to app.py:
+
+    import streamlit as st
+    st.write(dict(st.context.headers))
+
+Load the app; you should see X-Forwarded-User (or Cf-Access-...) populated.
+Remove the debug line before production.

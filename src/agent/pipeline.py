@@ -42,6 +42,32 @@ from src.models.agent import (
 )
 from src.logger import get_logger
 
+# Patch v9.3 — senior-expert persona wiring
+from src.services.persona_manager import detect_persona
+from src.agent.prompts import get_persona_prompt, persona_label
+
+
+def _resolve_persona_system(context_string: str, grounded_ctx) -> tuple[str, str]:
+    """
+    Inspect the retrieved chunks' filenames to decide which senior-expert
+    persona should answer, then return (system_prompt, human_label).
+    """
+    try:
+        files = []
+        for ch in getattr(grounded_ctx, "chunks", []) or []:
+            fn = getattr(getattr(ch, "metadata", None), "filename", None)
+            if fn:
+                files.append(fn)
+        info = detect_persona(files)
+        persona_key = info.get("persona", "domain_expert")
+        domain = info.get("domain", "general")
+        system = get_persona_prompt(persona_key, domain=domain, context=context_string)
+        return system, persona_label(persona_key, domain)
+    except Exception as e:
+        logger.warning(f"Persona resolution failed, falling back to generic: {e}")
+        return get_persona_prompt("domain_expert", "general", context_string), "Senior Domain Expert (20 yrs)"
+
+
 logger = get_logger(__name__)
 
 
@@ -217,11 +243,21 @@ class AgenticRAGPipeline:
                 ),
             )
 
+        # Patch v9.3 — pick senior-expert persona based on files in scope
+        persona_system, persona_lbl = _resolve_persona_system(context_string, grounded_ctx)
+        all_steps.append(AgentStep(
+            step_name="Persona",
+            iteration=agent_state.iterations,
+            input_summary=f"{len(grounded_ctx.chunks)} chunks in scope",
+            output_summary=persona_lbl,
+        ))
+
         cited_answer = self._generator.generate(
             question=effective_query,
             context_string=context_string,
             ctx=grounded_ctx,
             session_id=session_id,
+            system_override=persona_system,
         )
 
         all_steps.append(AgentStep(
@@ -328,12 +364,16 @@ class AgenticRAGPipeline:
         grounded_ctx, _ = self._quality_pipeline.run(candidates, agent_state.strategy)
         context_string = self._quality_pipeline.to_prompt_string(grounded_ctx)
 
+        # Patch v9.3 — persona for streaming path
+        persona_system, _ = _resolve_persona_system(context_string, grounded_ctx)
+
         # ---- Stream tokens ----
         full = ""
         for token in self._generator.stream(
             question=effective_query,
             context_string=context_string,
             session_id=session_id,
+            system_override=persona_system,
         ):
             full += token
             yield token
@@ -391,7 +431,14 @@ class AgenticRAGPipeline:
             return None
 
         # Route to the right engine
-        if spec.operation in ("ttest", "anova", "chi2", "regression", "normality"):
+        extra_paths, extra_caps = [], []
+        if spec.operation == "full_eda":
+            from src.services import eda_engine
+            result = eda_engine.run_full_eda(df)
+            if result and result.get("chart_paths"):
+                extra_paths = result["chart_paths"][1:]
+                extra_caps = result.get("captions", [])[1:]
+        elif spec.operation in ("ttest", "anova", "chi2", "regression", "normality"):
             result = stats_engine.run(spec.operation, df, spec.columns, spec.params)
         elif spec.operation == "chart":
             # Delegate to the chart pipeline against the real df
@@ -429,20 +476,25 @@ class AgenticRAGPipeline:
 
         # Optional chart hint from the result
         chart_path, chart_caption = None, None
-        hint = result.get("chart_hint")
-        if hint and self._charts_enabled and result.get("df") is not None:
-            try:
-                from src.services.chart_router import ChartSpec
-                cols = list(result["df"].columns)
-                spec_c = ChartSpec(chart_type=hint,
-                                   x=cols[0] if cols else None,
-                                   y=cols[1] if len(cols) > 1 else None)
-                if spec_c.is_valid():
-                    rendered = render_chart(result["df"], spec_c, raw_query)
-                    if rendered:
-                        chart_path, chart_caption = rendered
-            except Exception as e:
-                logger.debug(f"Auto-chart skipped: {e}")
+        # For full_eda, use the first chart from the engine as primary
+        if spec.operation == "full_eda" and result.get("chart_paths"):
+            chart_path = result["chart_paths"][0]
+            chart_caption = (result.get("captions") or [None])[0]
+        else:
+            hint = result.get("chart_hint")
+            if hint and self._charts_enabled and result.get("df") is not None:
+                try:
+                    from src.services.chart_router import ChartSpec
+                    cols = list(result["df"].columns)
+                    spec_c = ChartSpec(chart_type=hint,
+                                       x=cols[0] if cols else None,
+                                       y=cols[1] if len(cols) > 1 else None)
+                    if spec_c.is_valid():
+                        rendered = render_chart(result["df"], spec_c, raw_query)
+                        if rendered:
+                            chart_path, chart_caption = rendered
+                except Exception as e:
+                    logger.debug(f"Auto-chart skipped: {e}")
 
         step = AgentStep(
             step_name=f"Data Analysis · {spec.operation}",
@@ -457,13 +509,15 @@ class AgenticRAGPipeline:
             model_used=OLLAMA_LLM_MODEL,
             chart_path=chart_path,
             chart_caption=chart_caption,
+            extra_chart_paths=extra_paths,
+            extra_chart_captions=extra_caps,
             analysis_markdown=result["markdown"],
             analysis_operation=spec.operation,
             agent_steps=[step],
             metrics=EvaluationMetrics(
                 retrieval_k=0,
                 iterations_used=0,
-                strategy_used="analysis",
+                strategy_used="analysis" if spec.operation != "full_eda" else "full_eda",
                 confidence=1.0,
                 groundedness_score=1.0,
                 model_used=OLLAMA_LLM_MODEL,
