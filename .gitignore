@@ -1,0 +1,40 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Vector database (can be rebuilt)
+chroma_db/
+
+# Uploaded documents (user data)
+documents/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Distribution
+dist/
+build/
+*.egg-info/
