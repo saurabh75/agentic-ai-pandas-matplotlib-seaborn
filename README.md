@@ -1,93 +1,57 @@
-# 🤖 Agentic RAG Agent — 2026 Edition
+# Local RAG Agent — Patch v9.7
 
-> *"Not just retrieve → generate; a controlled loop of planning, retrieval, verification, and response."*
+Adds four features on top of v9.6:
 
-Implements the full **Agentic RAG Architecture** as a local, private, cost-free Streamlit app powered by Ollama.
+1. **Type conversion** — `str → int → float → datetime → bool → category`, any-to-any.
+2. **Analysis tiers** — deterministic Univariate, Bivariate, Multivariate reports with charts.
+3. **ZIP export** — every full-analysis run produces a downloadable bundle
+   (markdown report + raw stats JSON + all charts).
+4. **Stop button** — cooperative cancel token that halts LLM streaming and
+   preserves the partial answer with a `⏹️ Stopped by user.` marker.
 
----
-
-## Architecture
+## File map
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  1. INPUT & ORCHESTRATION                               │
-│     User Query → Intent Analysis → Planner → Policy    │
-├─────────────────────────────────────────────────────────┤
-│  2. AGENT LOOP                              max 3 iters │
-│     Query Rewrite → Strategy Select → Retrieval        │
-│     → Gap Detection → [loop or proceed]                 │
-├─────────────────────────────────────────────────────────┤
-│  3. KNOWLEDGE & MEMORY LAYER                            │
-│     Vector DB (Chroma) + BM25 + Session Memory         │
-├─────────────────────────────────────────────────────────┤
-│  4. RETRIEVAL QUALITY PIPELINE                          │
-│     Reranker → Dedup+Filter → Freshness → Context Bld  │
-├─────────────────────────────────────────────────────────┤
-│  5. REASONING & GENERATION                              │
-│     LLM → Draft → Citation Builder → Groundedness Check│
-│     → Final Answer (with citations + confidence %)     │
-├─────────────────────────────────────────────────────────┤
-│  6. EVALUATION & FEEDBACK                               │
-│     Latency | Confidence | Groundedness | Iterations   │
-└─────────────────────────────────────────────────────────┘
+src/services/type_converter.py         # NEW  — safe type coercion
+src/services/analysis_tiers.py         # NEW  — univariate / bivariate / multivariate
+src/services/analysis_router_patch.py  # PATCH — regex patterns to merge into router
+src/services/generation_engine_patch.py# PATCH — cancel-aware stream() snippet
+src/utils/cancel_token.py              # NEW  — threading.Event wrapper
+src/utils/export_report.py             # NEW  — zip builder
+app_patch_snippets.py                  # REF  — copy/paste blocks for app.py
 ```
 
----
+## Installation
 
-## Quick Start
+1. Unzip on top of your project root (new files land in `src/services/` and `src/utils/`).
+2. Merge the patch files into their existing counterparts:
+   - `analysis_router_patch.py` → add regex dicts into `analysis_router.py`.
+   - `generation_engine_patch.py` → add `cancel_token` param to your `stream()`.
+3. Wire `app.py` using the blocks in `app_patch_snippets.py`
+   (Stop button, conversion intent, analysis tiers, zip download).
 
-### Prerequisites
-- Python 3.10+
-- [Ollama](https://ollama.com) running locally
+## Dependencies
 
-### 1. Install dependencies
 ```bash
-pip install -r requirements.txt
+pip install scikit-learn statsmodels seaborn matplotlib scipy pandas
 ```
 
-### 2. Pull Ollama models
-```bash
-ollama pull llama3.1:8b          # LLM
-ollama pull nomic-embed-text     # Embeddings
-```
+## Chat examples that now work
 
-### 3. Run
-```bash
-streamlit run app.py
-# or
-bash start.sh
-```
+- `convert age to int`
+- `change signup_date type to datetime`
+- `cast charges as string`
+- `univariate analysis`
+- `bivariate analysis`
+- `multivariate analysis` (needs ≥3 numeric columns)
+- `do all` — runs all three tiers + statistical test battery, then offers the ZIP.
+- `⏹️ Stop` button appears whenever `generating=True`.
 
----
+## Notes
 
-## Key Features
-
-| Feature | Detail |
-|---|---|
-| **Agentic Loop** | Up to 3 retrieval iterations with automatic gap detection |
-| **Query Rewriting** | LLM rewrites queries to target missing evidence |
-| **Hybrid Retrieval** | BM25 + Dense Vector + Reciprocal Rank Fusion |
-| **Strategy Selection** | Auto-selects VECTOR/BM25/HYBRID/MMR by intent |
-| **Cross-encoder Reranking** | BGE reranker for precision |
-| **Groundedness Scoring** | Verifies every answer against context before display |
-| **Citation Builder** | Extracts inline [Source N] citations automatically |
-| **Streaming Responses** | Real-time token streaming in UI |
-| **Evaluation Dashboard** | Per-session latency, confidence, groundedness, iterations |
-| **Policy Check** | Guards against prompt injection and context overload |
-
-## Supported File Types
-`.pdf` · `.docx` · `.xlsx` · `.xls` · `.pptx` · `.ppt` · `.txt` · `.md` · `.csv`
-
-## Configuration
-All settings in `.env` — see `.env` for full reference.
-
-## CLI Usage
-```bash
-# Ingest documents
-python scripts/ingest.py --dir ./documents/
-python scripts/ingest.py --file report.pdf
-
-# Query
-python scripts/query.py "What are the key findings?"
-python scripts/query.py --session s1 "Follow-up question"
-```
+- The stop token is process-global (`get_cancel_token()`). If you deploy
+  multi-worker, move it into `st.session_state`.
+- Multivariate falls back with a friendly message when the dataset has
+  <3 numeric columns or <10 complete rows.
+- `format_report()` gives you a ready-to-render markdown blob for every
+  conversion.
